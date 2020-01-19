@@ -1,13 +1,35 @@
-name: Deploy Development Instance
+name: Development Deploy
 
 on:
   push:
     branches:
       - master
+
 jobs:
-    deploy:
+    publish_latest:
       runs-on: ubuntu-latest
-      name: deploy with ansible
+      env:
+        TAG: docker.pkg.github.com/corridors-of-time-transcription/puzzlepieces/puzzlepieces:latest
+        REGISTRY: docker.pkg.github.com
+        USERNAME: corridors-of-time-transcription
+      steps:
+      - uses: actions/checkout@v1
+      - name: login to registry
+        run: |
+          docker login $REGISTRY --username $USERNAME --password ${{ secrets.GITHUB_TOKEN }}
+          docker push ${TAG}
+      - name: build image
+        run: |
+          docker build . --file Dockerfile --tag ${TAG}
+      - name: publish image
+
+    deploy_latest:
+      needs: publish_latest
+      runs-on: ubuntu-latest
+      name: deploy latest on development instance with ansible
+      env:
+        REGISTRY: docker.pkg.github.com
+        USERNAME: corridors-of-time-transcription
       steps:
         - uses: actions/checkout@v1
 
@@ -38,4 +60,4 @@ jobs:
               -i ${{ secrets.DEV_INSTANCE_URL }}, \
               -u ${{ secrets.DEV_DEPLOY_USER }} \
               --extra-vars=${{ secrets.ANSIBLE_ENV_DEV }} \
-              --extra-vars='{"gh":{"user":"corridors-of-time-transcription","pass":"${{ secrets.GITHUB_TOKEN }}"}'
+              --extra-vars='{"docker":{"registry": "$REGISTRY","user":"$USERNAME","pass":"${{ secrets.GITHUB_TOKEN }}"}'
