@@ -13,15 +13,16 @@ jobs:
         REGISTRY: docker.pkg.github.com
         USERNAME: corridors-of-time-transcription
       steps:
-      - uses: actions/checkout@v1
+      - uses: actions/checkout@v2
+
       - name: login to registry
-        run: |
-          docker login $REGISTRY --username $USERNAME --password ${{ secrets.GITHUB_TOKEN }}
-          docker push ${TAG}
+        run: docker login $REGISTRY --username $USERNAME --password ${{ secrets.GITHUB_TOKEN }}
+
       - name: build image
-        run: |
-          docker build . --file Dockerfile --tag ${TAG}
+        run: docker build . --file Dockerfile --tag ${TAG}
+
       - name: publish image
+        run: docker push ${TAG}
 
     deploy_latest:
       needs: publish_latest
