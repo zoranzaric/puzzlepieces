@@ -10,6 +10,8 @@ class PuzzlePiece(models.Model):
 	approved = models.NullBooleanField(verbose_name="is image approved for verification")
 	priority = models.PositiveIntegerField(default=0,verbose_name="Priority value in transcription queue")
 	transCount = models.PositiveIntegerField(default=0,verbose_name="Number of transcriptions received for this image")
+	image_url = models.CharField(max_length=256, verbose_name="url of the image if found")
+	no_image_url_found = models.NullBooleanField(verbose_name="image url was not found")
 
 	def __str__(self):
 		data = []

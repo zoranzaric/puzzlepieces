@@ -97,6 +97,14 @@ def findUnconfidentPuzzlePieces(self):
 		#index = random.randint(0, len(result)-1)
 		#Randomly one of the top N, imgPoolSize above
 		index = random.randint(0, min(len(result)-1, imgPoolSize-1))
+		if result[index].image_url:
+			result[index].isImage = True
+			result[index].url = result[index].image_url
+			return result[index]
+		if result[index].no_image_url_found:
+			result[index].isImage = False
+			return result[index]
+
 		# Add an isImage that we'll reference in the template, this allows us to handle generic links
 		parsedUrl = urlparse(result[index].url)
 		if parsedUrl.path.lower().endswith(".jpg") or parsedUrl.path.lower().endswith(".png") or parsedUrl.path.lower().endswith(".jpeg"):
@@ -107,9 +115,12 @@ def findUnconfidentPuzzlePieces(self):
 			if turl:
 				# Future - we could also update the DB with this
 				result[index].url = turl
+				result[index].image_url = turl
 				result[index].isImage = True
+				result[index].no_image_url_found = False
 			else:
 				result[index].isImage = False
+				result[index].no_image_url_found = True
 		# Warn if rotateod
 		rotated = PuzzlePiece.objects.raw('SELECT id FROM collector_rotatedimage WHERE puzzlePiece_id = ' + str(result[index].id))
 		if rotated:
