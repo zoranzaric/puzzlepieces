@@ -89,7 +89,7 @@ def findUnconfidentPuzzlePieces(self):
 	# We want to order by transCount descending to get faster results. We do not show anything definitely flagged as bad; that already has been solved; or that this IP (hash) has offered a transcription for
 	result = PuzzlePiece.objects.raw('SELECT * FROM collector_puzzlepiece WHERE id NOT IN (SELECT puzzlePiece_id FROM collector_confidentsolution) ' + \
 					'AND id NOT IN (SELECT puzzlePiece_id FROM collector_badimage) AND id not IN (SELECT puzzlePiece_id FROM collector_transcriptiondata WHERE ip_address = "' + \
-					client_ip_hash + '") ORDER BY priority DESC, transCount DESC')
+					client_ip_hash + '") AND (no_image_url_found IS NULL OR no_image_url_found = false) ORDER BY priority DESC, transCount DESC')
 	# Want less than a certain confidence.
 	# X or more "bad image" records will disqualify from showing up again.
 	#print(result.query)
