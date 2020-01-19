@@ -4,6 +4,7 @@ from django.template import loader
 from django.shortcuts import get_object_or_404, render
 from django.views import generic
 from django.db.models import Count
+from django.conf import settings
 from .models import *
 from .serializers import (
     PuzzlePieceSerializer,
@@ -16,7 +17,9 @@ import json
 from . import UtilityOps as UtilityOps
 from urllib.parse import urlparse
 from random import randint
+import csv
 import hashlib
+import hmac
 import requests
 from rest_framework.decorators import action
 from rest_framework.response import Response
@@ -28,22 +31,59 @@ def hash_my_data(url):
 	hex_dig = hash_object.hexdigest()
 	return hex_dig
 
+# When exporting data, we shouldn't really make hash(ip) public because it's
+# too easy to reverse. Use HMAC with SECRET_KEY as a keyed hash, to prevent
+# reversing while still being usable as a unique identifier within a single
+# exported set of data
+def secretly_hash_my_data(data):
+	key = settings.SECRET_KEY.encode("utf-8")
+	data = data.encode("utf-8")
+	hash_object = hmac.new(key, data, hashlib.sha256)
+	hex_dig = hash_object.hexdigest()
+	return hex_dig
 
-def findUnconfidentPuzzlePieces():
+def findImage(url):
+	host = urlparse(url).hostname
+	if host in ["imgur.com"]:
+	# Can we be clever and figure out an Imgur URL on the fly?
+		turl = "https://i.imgur.com" + urlparse(url).path + ".png"
+		res = requests.head(turl)
+		if res.status_code == 200:
+			return turl
+		turl = "https://i.imgur.com" + urlparse(url).path + ".jpg"
+		res = requests.head(turl)
+		if res.status_code == 200:
+			return turl
+		return None
+	else:
+		return None
+
+def findUnconfidentPuzzlePieces(self):
 	import random
-	#result = PuzzlePiece.objects.all()
+	client_ip_hash = hash_my_data(UtilityOps.UtilityOps.GetClientIP(self.request))
+	# We want to order by transCount descending to get faster results. We do not show anything definitely flagged as bad; that already has been solved; or that this IP (hash) has offered a transcription for
 	result = PuzzlePiece.objects.raw('SELECT * FROM collector_puzzlepiece WHERE id NOT IN (SELECT puzzlePiece_id FROM collector_confidentsolution) ' + \
-					'AND id NOT IN (SELECT puzzlePiece_id FROM collector_badimage)')
+					'AND id NOT IN (SELECT puzzlePiece_id FROM collector_badimage) AND id not IN (SELECT puzzlePiece_id FROM collector_transcriptiondata WHERE ip_address = "' + \
+					client_ip_hash + '") ORDER BY transCount DESC')
 	# Want less than a certain confidence.
 	# X or more "bad image" records will disqualify from showing up again.
 	#print(result.query)
 	if len(result) > 0:
-		index = random.randint(0, len(result)-1)
-		# Add an isAmage that we'll reference in the template, this allows us to handle generic links
-		if result[index].url.endswith(".jpg") or result[index].url.endswith(".png"):
+		#index = random.randint(0, len(result)-1)
+		#Randomly one of the top 20. This allows people to hit F5 if they don't like the one they see, instead of being forced to put in BS data or click "Bad Image"
+		index = random.randint(0, min(len(result)-1, 19))
+		# Add an isImage that we'll reference in the template, this allows us to handle generic links
+		if result[index].url.lower().endswith(".jpg") or result[index].url.lower().endswith(".png"):
 			result[index].isImage = True
 		else:
-			result[index].isImage = False
+			# Can we be clever and figure out an Image URL on the fly?
+			turl = findImage(result[index].url)
+			if turl:
+				# Future - we could also update the DB with this
+				result[index].url = turl
+				result[index].isImage = True
+			else:
+				result[index].isImage = False
 		# Warn if rotateod
 		rotated = PuzzlePiece.objects.raw('SELECT id FROM collector_rotatedimage WHERE puzzlePiece_id = ' + str(result[index].id))
 		if rotated:
@@ -58,6 +98,9 @@ def index(request):
 	template = loader.get_template("collector/index.html")
 	return HttpResponse(template.render(None, request))
 
+def transcriptionGuide(request):
+	template = loader.get_template("collector/transcriptionGuide.html")
+	return HttpResponse(template.render(None, request))
 
 def puzzlepieceSubmit(request):
 	responseMessage = None
@@ -66,10 +109,12 @@ def puzzlepieceSubmit(request):
 	try:
 		if request.method == "POST":
 			url = request.POST["url"].strip()
+			if len(url) > 200:
+				raise ValueError('You havin\' a laff, mate? A URL that long? Yeah no.')
 			host = urlparse(url).hostname
 			if host not in ["cdn.discordapp.com", "media.discordapp.net", "i.gyazo.com", "i.imgur.com"]:
 				raise ValueError('We only accept images from cdn.discordapp.com, media.discordapp.net, i.gyazo.com and i.imgur.com right now.')
-			if not (url.endswith(".jpg") or url.endswith(".png")):
+			if not (url.lower().endswith(".jpg") or url.lower().endswith(".png")):
 				raise ValueError('Please make sure your link ends with .jpg or .png. Direct links to images work best with our current site.')
 			if url.find("http",8,len(url)) != -1:
 				raise ValueError('Found http in the middle of the URL - did you paste it twice?' + url)
@@ -131,7 +176,7 @@ class TranscribeIndex(generic.ListView):
 	context_object_name = 'puzzlepiece'
 
 	def get_queryset(self):
-		return findUnconfidentPuzzlePieces()
+		return findUnconfidentPuzzlePieces(self)
 
 
 def processTranscription(request, puzzlepiece_id):
@@ -155,7 +200,8 @@ def processTranscription(request, puzzlepiece_id):
 			data = None
 
 		puzzlePiece = get_object_or_404(PuzzlePiece, pk=puzzlepiece_id)
-		client_ip_address = UtilityOps.UtilityOps.GetClientIP(request)
+		# Hash IP bcs of GDPR
+		client_ip_address = hash_my_data(UtilityOps.UtilityOps.GetClientIP(request))
 		errors, transcriptData = processTransscriptionData(data, bad_image, rotated_image, puzzlePiece, client_ip_address)
 		determineConfidence(puzzlepiece_id)
 
@@ -365,7 +411,7 @@ def updateTransCount(puzzlepieceId, transCount):
 		return piece
 	except Exception as ex:
 		piece = None
-	
+
 def setOrUpdateBadImage(puzzlepieceId, badCount):
 	try:
 		bad = BadImage.objects.get(puzzlePiece_id=puzzlepieceId)
@@ -502,3 +548,113 @@ class TranscriptionDataViewSet(viewsets.GenericViewSet, mixins.CreateModelMixin)
         headers = self.get_success_headers(serializer.data)
 
         return Response(serializer.data, status=status.HTTP_201_CREATED, headers=headers)
+
+def exportVerifiedCSV(request):
+	response = HttpResponse(content_type = 'text/plain')
+	writer = csv.writer(response)
+
+	writer.writerow([
+		"Image",
+		"Center",
+		"Walls",
+		"Link1",
+		"Link2",
+		"Link3",
+		"Link4",
+		"Link5",
+		"Link6",
+		"Confidence",
+		"Transcription count",
+		"Incorrect Rotation Flag"
+	])
+
+	for solution in ConfidentSolution.objects.all():
+		w = [solution.wall1, solution.wall2, solution.wall3, solution.wall4, solution.wall5, solution.wall6]
+		walls = ",".join(str(i+1) for i in range(6) if w[i])
+
+		rotated = PuzzlePiece.objects.raw('SELECT id FROM collector_rotatedimage WHERE puzzlePiece_id = ' + str(solution.puzzlePiece.id))
+		if rotated:
+			solution.rotated = True
+		else:
+			solution.rotated = False
+		writer.writerow([
+			solution.puzzlePiece.url,
+			solution.center,
+			walls,
+			solution.link1,
+			solution.link2,
+			solution.link3,
+			solution.link4,
+			solution.link5,
+			solution.link6,
+			solution.confidence,
+			solution.puzzlePiece.transCount,
+			solution.rotated
+		])
+
+	return response
+
+def exportPiecesCSV(request):
+	response = HttpResponse(content_type = 'text/plain')
+	writer = csv.writer(response)
+
+	writer.writerow([
+		"Image",
+		"Submitter",
+		"Submitted date",
+		"Last modified",
+		"Transcription count"
+	])
+
+	for piece in PuzzlePiece.objects.all():
+		writer.writerow([
+			piece.url,
+			secretly_hash_my_data(piece.ip_address),
+			piece.submitted_date,
+			piece.last_modified,
+			piece.transCount
+		])
+
+	return response
+
+def exportTranscriptionsCSV(request):
+	response = HttpResponse(content_type = 'text/plain')
+	writer = csv.writer(response)
+
+	writer.writerow([
+		"Image",
+		"Submitter",
+		"Submitted date",
+		"Bad image",
+		"Orientation",
+		"Center",
+		"Openings",
+		"Link1",
+		"Link2",
+		"Link3",
+		"Link4",
+		"Link5",
+		"Link6"
+	])
+
+	for trans in TranscriptionData.objects.all():
+		walls = [trans.wall1, trans.wall2, trans.wall3, trans.wall4, trans.wall5, trans.wall6]
+		openings = ",".join(str(i+1) for i in range(6) if walls[i])
+
+		writer.writerow([
+			trans.puzzlePiece.url,
+			secretly_hash_my_data(trans.ip_address),
+			trans.submitted_date,
+			trans.bad_image,
+			trans.orientation,
+			trans.center,
+			openings,
+			trans.link1,
+			trans.link2,
+			trans.link3,
+			trans.link4,
+			trans.link5,
+			trans.link6
+		])
+
+	return response
